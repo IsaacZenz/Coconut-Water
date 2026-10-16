@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Rate My Coconut Water</title>
+<meta name="theme-color" content="#0A1050">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Coconut Water">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="sky" id="sky0" aria-hidden="true"></div>
+<div class="clouds" id="clouds0" aria-hidden="true"></div>
+
+<!-- Log in / sign up / reset -->
+<section id="auth" hidden></section>
+
+<!-- The app, shown once logged in -->
+<div id="shell" hidden>
+  <main id="app">
+    <header class="top frame">
+      <span class="logo" data-px="star"></span>
+      <h1>Rate My Coconut Water</h1>
+      <button class="iconbtn" id="acct" type="button" aria-label="Account" data-ic="user"></button>
+    </header>
+    <div class="search frame" id="searchBox" role="search" hidden>
+      <span data-ic="search"></span>
+      <input id="q" type="search" placeholder="Search your ratings" aria-label="Search ratings by name" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="xbtn" id="qclear" type="button" aria-label="Clear search" data-ic="x" hidden></button>
+    </div>
+    <div id="chips" class="chips" role="group" aria-label="Filter by category"></div>
+    <div class="toolbar" id="toolbar">
+      <h2 id="shown"></h2>
+      <label for="sort">Sort
+        <select id="sort"><option value="new">Newest</option><option value="high">Highest rated</option><option value="low">Lowest rated</option><option value="name">Name A–Z</option></select>
+      </label>
+    </div>
+    <ul id="list" class="list"></ul>
+    <div id="status" class="status frame" hidden>
+      <span id="statusMsg">Loading your ratings…</span>
+      <button class="btn" id="retry" type="button" hidden>Try again</button>
+    </div>
+    <div id="empty" class="empty frame" hidden>
+      <span class="big" data-px="star"></span>
+      <h2>Nothing rated yet</h2>
+      <p>Tap the button below to snap a product, name it, give it a score from 1 to 10, and write your review.</p>
+    </div>
+    <div id="nomatch" class="empty frame" hidden>
+      <span class="big" data-px="spark"></span>
+      <h2>No matches</h2>
+      <p id="nomatchMsg"></p>
+      <button class="btn" id="nomatchBtn" type="button">Clear search</button>
+    </div>
+  </main>
+  <button id="add" class="fab" type="button"><span data-ic="camera"></span>+ Rate something</button>
+</div>
+
+<div id="sheet" class="sheet" hidden role="dialog" aria-modal="true"></div>
+<div id="toast" class="toast frame" role="status"></div>
+
+<script src="config.js"></script>
+<script src="supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
