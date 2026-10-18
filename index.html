@@ -33,6 +33,20 @@
       <h1>Rate My Coconut Water</h1>
       <button class="iconbtn" id="acct" type="button" aria-label="Account" data-ic="user"></button>
     </header>
+    <div class="tabs apptabs" role="group" aria-label="Show">
+      <button class="chip" type="button" data-tab="mine" aria-pressed="true">My ratings</button>
+      <button class="chip" type="button" data-tab="friends" id="tabFriends" aria-pressed="false">Friends<span class="badge" id="reqBadge" aria-hidden="true" hidden></span></button>
+    </div>
+
+    <!-- Friends list, requests, add a friend (filled in by app.js) -->
+    <section id="friendsView" class="fview" hidden></section>
+
+    <!-- Your ratings, or a friend's ratings (read-only) -->
+    <section id="ratingsView">
+    <div class="sheet-bar frame friendbar" id="friendBar" hidden>
+      <button class="iconbtn" data-act="frback" type="button" aria-label="Back to friends" data-ic="back"></button>
+      <h2 id="friendTitle"></h2><span></span>
+    </div>
     <div class="search frame" id="searchBox" role="search" hidden>
       <span data-ic="search"></span>
       <input id="q" type="search" placeholder="Search your ratings" aria-label="Search ratings by name" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -53,7 +67,7 @@
     <div id="empty" class="empty frame" hidden>
       <span class="big" data-px="star"></span>
       <h2>Nothing rated yet</h2>
-      <p>Tap the button below to snap a product, name it, give it a score from 1 to 10, and write your review.</p>
+      <p id="emptyMsg">Tap the button below to snap a product, name it, give it a score from 1 to 10, and write your review.</p>
     </div>
     <div id="nomatch" class="empty frame" hidden>
       <span class="big" data-px="spark"></span>
@@ -61,6 +75,7 @@
       <p id="nomatchMsg"></p>
       <button class="btn" id="nomatchBtn" type="button">Clear search</button>
     </div>
+    </section>
   </main>
   <button id="add" class="fab" type="button"><span data-ic="camera"></span>+ Rate something</button>
 </div>

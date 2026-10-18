@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself available offline.
 // Ratings and photos always come from your account, so they need a connection.
 // When you change any app file, bump CACHE so phones pick up the new version.
-const CACHE = 'rmcw-v1';
+const CACHE = 'rmcw-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'supabase.js',
   'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 

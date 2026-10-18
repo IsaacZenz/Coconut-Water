@@ -10,7 +10,8 @@ Live site: https://ratemycoconutwater.com
 
 A phone-first web app for photographing, naming, categorizing, rating (1–10) and reviewing coconut water and anything else.
 
-- Each person creates an account with **email + password** and sees **only their own ratings**. There is no sharing, no public profiles, no social features — by design.
+- Each person creates an account with **email + password**. Your ratings are private to you **and the friends you've accepted** — nobody else. There are no public profiles, no search of other users, no likes or comments — by design.
+- **Friends tab:** pick a unique username (3–20 characters: a–z, 0–9, _), send a request by typing a friend's exact username, accept or decline requests you receive, cancel requests you sent, and remove friends. A pink badge on the tab shows new requests. Tap a friend to see their ratings — read-only, with the same search, category chips and sort. If someone sends you a request while you've already sent them one, you become friends straight away.
 - A rating has: photo (optional), product name, category, score 1–10, notes (optional), date.
 - Home screen: search by name, filter by category chips, sort (newest, highest, lowest, A–Z).
 - Tap a rating to see it full size, edit it, or delete it (with a confirm step).
@@ -51,9 +52,12 @@ Three free services, no server of our own:
 | `icon-192.png`, `icon-512.png`, `apple-touch-icon.png` | App icons (pixel star) | Replace to change the icon |
 | `CNAME` | Created by GitHub; holds the custom domain | **Never delete** |
 | `supabase/setup.sql` | The database setup that was run once in Supabase | Reference; re-run only if rebuilding |
+| `supabase/002-friends.sql` | Friends: usernames, friend requests, friends-can-read rules | Reference; run after `setup.sql` if rebuilding |
 | `PROJECT.md` | This guide | Update with every change |
 
-Useful places in `app.js`: `DEFAULT_CATS` (default categories), `LABELS` (score words), `shrink()` (photo size), `renderAuth()` (login screen), `openForm()` (add/edit form), `render()` (home list).
+Useful places in `app.js`: `DEFAULT_CATS` (default categories), `LABELS` (score words), `shrink()` (photo size), `renderAuth()` (login screen), `openForm()` (add/edit form), `render()` (tabs + badge, then picks the screen), `renderList()` (your list or a friend's), `renderFriends()` (Friends screen), `loadSocial()` (username + friend list), `loadFriend()` (a friend's ratings), `sendRequest()` (the messages shown after Send).
+
+**Important:** your own list is loaded with `.eq('user_id', uid)`. Because friends' ratings are now readable, any new query for "my" ratings must filter by user the same way, or friends' ratings will mix into yours.
 
 ---
 
@@ -68,12 +72,18 @@ Useful places in `app.js`: `DEFAULT_CATS` (default categories), `LABELS` (score 
 - `ratings` table — one row per rating: `id`, `user_id`, `name`, `category`, `score` (1–10), `notes`, `photo_path`, `created_at`, `updated_at`.
 - `categories` table — each person’s category list: `user_id`, `name`, `sort`. Defaults are added the first time a person logs in, so changing `DEFAULT_CATS` only affects new accounts.
 - `photos` storage bucket — **private**, JPEG only, 5 MB max. Each photo is stored at `<user_id>/<rating_id>.jpg`. The app shows photos through temporary links that last 24 hours and are renewed on each load.
-- Row Level Security on everything: a logged-in person can only read or change rows and photos that belong to them. Logged-out visitors can’t read anything.
+- `profiles` table — `id` (the user), `username` (unique, lowercase). Each person can read and change only their own. Nobody can browse or search other profiles.
+- `friendships` table — one row per pair: `requester`, `addressee`, `status` (`pending` or `accepted`). People can read rows they're part of, but **can't change them directly** — all changes go through these database functions, which check who's calling:
+  - `send_friend_request(username)` → returns `sent`, `accepted`, `already_friends`, `already_sent`, `not_found`, `self`, `no_username` or `too_many` (50 pending sent requests max)
+  - `respond_friend_request(id, accept)` — only the person who received it; declining deletes the row
+  - `remove_friendship(id)` — either person; used for Cancel and Remove
+  - `my_friendships()` — your list with the other person's username; `friend_ids()` — used by the read rules
+- Row Level Security on everything. You can **change** only your own rows and photos. You can **read** your own plus those of accepted friends (`ratings: friends read`, `photos: friends read`). Logged-out visitors can’t read anything. Removing a friend cuts off their access straight away; friends' photo links last only 1 hour (yours last 24).
 
 ### Dashboard settings in use
 
 - Data API: **on**. Automatically expose new tables: **off** (access is granted in `setup.sql`). Automatic RLS: **on**.
-- Authentication → Providers → Email: **on**. “Confirm email” was turned **off** for testing — check its current state.
+- Authentication → Sign In / Providers → Email: **on**, with **“Confirm email” on**. Keep it on now that friends exist — otherwise someone could sign up with another person's email address.
 - Authentication → URL Configuration: Site URL `https://ratemycoconutwater.com`, Redirect URL `https://ratemycoconutwater.com/**`.
 
 ### Free-plan limits to remember
@@ -110,7 +120,9 @@ Log in → add a rating with a photo → search for it → edit it → delete it
 
 ## 6. Known limits and ideas for later
 
-- No “delete my account” button (needs a secure server function in Supabase).
+- No “delete my account” button (needs a secure server function in Supabase). Deleting a user in the Supabase dashboard also removes their profile and friendships.
+- No email or push notification for friend requests — they show in the app with a badge.
+- Can't hide individual ratings from friends; friends see everything, notes and photos included.
 - No export/backup of ratings from inside the app.
 - Ratings need a connection to add, edit or load; only the app shell works offline.
 - Ideas: export to CSV, stats page (averages by category), brand/price/flavor fields, sorting by category, multiple photos per rating.
@@ -130,3 +142,4 @@ Share this repo’s link (or a zip of it) and say something like:
 | Date | Change |
 |---|---|
 | 2026-10 | First release: accounts (Supabase), ratings with photos, categories, search, night-sky pixel design, PWA install, custom domain. |
+| 2026-10 | Friends: usernames, Friends tab with requests (send / accept / decline / cancel / remove) and badge, read-only view of a friend's ratings. New `supabase/002-friends.sql`; `setup.sql` moved into `supabase/`; own ratings now filtered by user; “Confirm email” back on. Cache `rmcw-v2`. |

@@ -31,7 +31,8 @@ const IC = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l6-5 4 3 3-2 3 3"/>',
-  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>'
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>'
 };
 const ic = (n, s = 22) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
 
@@ -43,7 +44,13 @@ let user = null, currentUid = null;
 let items = [], cats = [], filter = 'All', sort = 'new', q = '';
 let draft = null, openId = null, lastCat = null, saving = false;
 let loadState = 'loading'; // loading | ready | error
-let authMode = 'in', authEmail = '', authBusy = false, lastLoad = 0;
+let authMode = 'in', authEmail = '', authBusy = false, lastLoad = 0, myErr = '';
+// friends
+let tab = 'mine';      // mine | friends
+let viewing = null;    // a friend's ratings being viewed: { id, username, items, state, err, lastLoad }
+const freshFr = () => ({ list: [], username: null, state: 'idle', err: '', lastLoad: 0 }); // state: idle | loading | ready | error
+let fr = freshFr(), frBusy = false, frNote = null, frInput = '', unameInput = '', rmAsk = null;
+const cur = () => viewing ? viewing.items : items;
 
 /* ---------- helpers ---------- */
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 3200) }
@@ -81,10 +88,10 @@ function readCache() { try { const c = JSON.parse(localStorage.getItem(ckey()));
 function clearCache(uid) { try { localStorage.removeItem('ra-cache-v1-' + uid); localStorage.removeItem('ra-lastcat-' + uid) } catch (_) { } }
 
 /* ---------- data ---------- */
-async function signPhotos(list) {
+async function signPhotos(list, ttl = 86400) {
   const paths = list.filter(i => i.photoPath).map(i => i.photoPath); if (!paths.length) return;
   try {
-    const { data, error } = await sb.storage.from(BUCKET).createSignedUrls(paths, 86400); if (error) throw error;
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrls(paths, ttl); if (error) throw error;
     const m = new Map(data.map(d => [d.path, d.signedUrl]));
     list.forEach(i => { if (i.photoPath) i.photoUrl = m.get(i.photoPath) || null });
   } catch (_) { /* photos are optional; ratings still show */ }
@@ -101,7 +108,8 @@ async function loadData() {
   try {
     const [c, r] = await Promise.all([
       sb.from('categories').select('name,sort').order('sort').order('name'),
-      sb.from('ratings').select('*').order('created_at', { ascending: false })
+      // Friends' ratings are readable too now, so always ask for your own explicitly.
+      sb.from('ratings').select('*').eq('user_id', uid).order('created_at', { ascending: false })
     ]);
     if (c.error) throw c.error; if (r.error) throw r.error;
     if (uid !== currentUid) return;
@@ -113,34 +121,147 @@ async function loadData() {
     if (uid !== currentUid) return;
     items = list; loadState = 'ready'; lastLoad = Date.now(); writeCache();
   } catch (e) {
-    if (items.length) { loadState = 'ready'; toast(friendly(e)) } else { loadState = 'error'; $('#statusMsg').textContent = friendly(e) }
+    if (uid !== currentUid) return;
+    if (items.length) { loadState = 'ready'; toast(friendly(e)) } else { loadState = 'error'; myErr = friendly(e) }
   }
   render();
+}
+
+/* ---------- friends: data ---------- */
+const UNAME = /^[a-z0-9_]{3,20}$/;
+const cleanName = s => String(s || '').trim().replace(/^@+/, '').toLowerCase();
+async function loadSocial() {
+  if (!sb || !currentUid) return;
+  const uid = currentUid;
+  if (fr.state !== 'ready') { fr.state = 'loading'; if (tab === 'friends') render() }
+  try {
+    const [p, f] = await Promise.all([
+      sb.from('profiles').select('username').eq('id', uid).maybeSingle(),
+      sb.rpc('my_friendships')
+    ]);
+    if (p.error) throw p.error; if (f.error) throw f.error;
+    if (uid !== currentUid) return;
+    fr.username = p.data?.username || null; fr.list = f.data || []; fr.state = 'ready'; fr.err = ''; fr.lastLoad = Date.now();
+  } catch (e) {
+    if (uid !== currentUid) return;
+    if (fr.state !== 'ready') { fr.state = 'error'; fr.err = friendly(e) } else if (tab === 'friends') toast(friendly(e));
+  }
+  render();
+}
+async function saveUsername(inputId, msgId) {
+  const el = $('#' + inputId), v = cleanName(el && el.value);
+  const say = t => { const m = $('#' + msgId); if (m) { m.textContent = t; m.hidden = !t } };
+  if (!UNAME.test(v)) return say('Use 3–20 characters: lowercase letters, numbers or _.');
+  if (v === fr.username) return say('');
+  if (frBusy) return; frBusy = true; say('');
+  const btns = document.querySelectorAll('[data-act="setuname"]'); btns.forEach(b => b.disabled = true);
+  try {
+    const { error } = await sb.from('profiles').upsert({ id: currentUid, username: v }, { onConflict: 'id' });
+    if (error) throw error;
+    fr.username = v; unameInput = ''; toast('Username saved');
+    if (el.id === 'unameEdit') el.value = v;
+    frBusy = false; if (tab === 'friends' && !viewing) render();
+  } catch (e) {
+    say(e && e.code === '23505' ? 'That username is taken. Try another.' : friendly(e));
+  } finally { frBusy = false; btns.forEach(b => b.disabled = false) }
+}
+async function sendRequest() {
+  const v = cleanName(frInput);
+  if (!v) { frNote = ['Enter a username.', 'err']; return render() }
+  if (frBusy) return; frBusy = true; frNote = null; render();
+  try {
+    const { data, error } = await sb.rpc('send_friend_request', { p_username: v }); if (error) throw error;
+    const M = {
+      sent: [`Request sent to @${v}.`, 'ok'], accepted: [`You and @${v} are now friends.`, 'ok'],
+      already_friends: [`You're already friends with @${v}.`, 'ok'], already_sent: [`You already sent @${v} a request.`, 'ok'],
+      not_found: [`No one has the username @${v}. Check the spelling.`, 'err'], self: ["That's your own username.", 'err'],
+      no_username: ['Pick your username first.', 'err'], too_many: ['You have lots of requests waiting. Cancel some first.', 'err']
+    };
+    frNote = M[data] || ['Done.', 'ok'];
+    if (data === 'sent' || data === 'accepted') frInput = '';
+  } catch (e) { frNote = [friendly(e), 'err'] }
+  frBusy = false;
+  await loadSocial();
+}
+async function frAct(fn, args, okMsg) {
+  if (frBusy) return; frBusy = true; render();
+  try { const { error } = await sb.rpc(fn, args); if (error) throw error; if (okMsg) toast(okMsg) }
+  catch (e) { toast(friendly(e)) }
+  frBusy = false; rmAsk = null;
+  await loadSocial();
+}
+function openFriend(fid) {
+  const f = fr.list.find(x => x.friend_id === fid && x.status === 'accepted'); if (!f) return;
+  viewing = { id: fid, username: f.username, items: [], state: 'loading', err: '', lastLoad: 0 };
+  filter = 'All'; q = ''; $('#q').value = ''; window.scrollTo(0, 0);
+  render(); loadFriend();
+}
+async function loadFriend() {
+  const v = viewing; if (!v || !sb) return;
+  if (!v.items.length) v.state = 'loading';
+  render();
+  try {
+    const r = await sb.from('ratings').select('*').eq('user_id', v.id).order('created_at', { ascending: false });
+    if (r.error) throw r.error;
+    const list = r.data.map(fromRow);
+    await signPhotos(list, 3600); // short-lived links, so unfriending cuts off photos quickly
+    if (viewing !== v) return;
+    v.items = list; v.state = 'ready'; v.err = ''; v.lastLoad = Date.now();
+  } catch (e) {
+    if (viewing !== v) return;
+    if (v.items.length) toast(friendly(e)); else { v.state = 'error'; v.err = friendly(e) }
+  }
+  render();
+}
+function switchTab(n) {
+  if (n === tab && !viewing) return;
+  tab = n; viewing = null; rmAsk = null; frNote = null;
+  filter = 'All'; q = ''; $('#q').value = ''; window.scrollTo(0, 0);
+  render();
+  if (n === 'friends') loadSocial();
 }
 
 /* ---------- list ---------- */
 const needle = () => q.trim().toLowerCase();
 function visible() {
   const n = needle();
-  const l = items.filter(i => (filter === 'All' || i.cat === filter) && (!n || i.name.toLowerCase().includes(n)));
+  const l = cur().filter(i => (filter === 'All' || i.cat === filter) && (!n || i.name.toLowerCase().includes(n)));
   const s = { new: (a, b) => b.created - a.created, high: (a, b) => b.score - a.score || b.created - a.created, low: (a, b) => a.score - b.score || b.created - a.created, name: (a, b) => a.name.localeCompare(b.name) }[sort];
   return l.sort(s);
 }
+const EMPTY_MINE = 'Tap the button below to snap a product, name it, give it a score from 1 to 10, and write your review.';
 function render() {
   if (!currentUid) return;
-  const used = [...new Set(items.map(i => i.cat))];
+  const pending = fr.list.filter(x => x.incoming).length;
+  document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+  const bd = $('#reqBadge'); bd.textContent = pending; bd.hidden = !pending;
+  $('#tabFriends').setAttribute('aria-label', pending ? `Friends, ${pending} new request${pending > 1 ? 's' : ''}` : 'Friends');
+  const showFriends = tab === 'friends' && !viewing;
+  $('#friendsView').hidden = !showFriends;
+  $('#ratingsView').hidden = showFriends;
+  $('#add').hidden = tab !== 'mine';
+  if (showFriends) return renderFriends();
+  renderList();
+}
+function renderList() {
+  const v = viewing, src = cur(), st = v ? v.state : loadState;
+  $('#friendBar').hidden = !v;
+  if (v) $('#friendTitle').textContent = `@${v.username}'s ratings`;
+  $('#q').placeholder = v ? `Search @${v.username}'s ratings` : 'Search your ratings';
+  $('#emptyMsg').textContent = v ? `@${v.username} hasn't rated anything yet. Check back later.` : EMPTY_MINE;
+  const used = [...new Set(src.map(i => i.cat))];
   if (filter !== 'All' && !used.includes(filter)) filter = 'All';
-  const n = needle(), has = items.length > 0, ready = loadState === 'ready';
+  const n = needle(), has = src.length > 0, ready = st === 'ready';
   $('#chips').innerHTML = ['All', ...used].map(c => `<button class="chip" type="button" data-filter="${esc(c)}" aria-pressed="${c === filter}">${esc(c)}</button>`).join('');
   $('#chips').hidden = !has;
   $('#searchBox').hidden = !has;
   $('#qclear').hidden = !q;
   const l = visible();
-  $('#shown').textContent = `${filter === 'All' ? 'All ratings' : filter} (${l.length})`;
+  $('#shown').textContent = `${filter === 'All' ? (v ? 'Their ratings' : 'All ratings') : filter} (${l.length})`;
   $('#toolbar').hidden = !has || !l.length;
   $('#status').hidden = ready || has;
-  $('#statusMsg').textContent = loadState === 'error' ? $('#statusMsg').textContent : 'Loading your ratings…';
-  $('#retry').hidden = loadState !== 'error';
+  $('#statusMsg').textContent = st === 'error' ? (v ? v.err : myErr) : v ? `Loading @${v.username}'s ratings…` : 'Loading your ratings…';
+  $('#retry').hidden = st !== 'error';
   $('#empty').hidden = !(ready && !has);
   const nomatch = has && !l.length;
   $('#nomatch').hidden = !nomatch;
@@ -154,6 +275,49 @@ function render() {
     <span class="score ${tier(it.score)}">${it.score}<small>/10</small></span></button></li>`).join('');
 }
 
+/* ---------- friends: screen ---------- */
+function renderFriends() {
+  const box = $('#friendsView');
+  const a = document.activeElement, keepId = a && box.contains(a) ? a.id : null, pos = keepId && a.selectionStart;
+  const dis = frBusy ? ' disabled' : '';
+  const say = (m, k) => m ? `<div class="msg ${k === 'ok' ? 'ok' : 'err'}" role="status">${esc(m)}</div>` : '';
+  const nameInput = (id, val, ph) => `<input type="text" id="${id}" maxlength="21" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="${ph}" value="${esc(val)}">`;
+  let h = '';
+  if (fr.state === 'loading' || fr.state === 'idle') {
+    h = `<div class="status frame">Loading your friends…</div>`;
+  } else if (fr.state === 'error') {
+    h = `<div class="status frame"><span>${esc(fr.err)}</span><button class="btn" data-act="frretry" type="button">Try again</button></div>`;
+  } else if (!fr.username) {
+    h = `<div class="empty frame"><span class="big">${pixel(STAR)}</span><h2>Pick a username</h2><p>Friends add you by your username. They'll see your ratings only after you accept them.</p></div>
+      <div class="block frame"><label for="unameNew"><span>Your username</span><span class="opt">3–20 · a–z, 0–9, _</span></label>
+        <div class="row">${nameInput('unameNew', unameInput, 'e.g. coco_fan')}<button class="btn violet" data-act="setuname" data-input="unameNew" data-msg="unameMsg" type="button"${dis}>Save</button></div>
+        <div id="unameMsg" class="msg err" role="alert" hidden></div></div>`;
+  } else {
+    const inc = fr.list.filter(x => x.incoming);
+    const friends = fr.list.filter(x => x.status === 'accepted').sort((x, y) => x.username.localeCompare(y.username));
+    const sent = fr.list.filter(x => x.status === 'pending' && !x.incoming);
+    h += `<div class="block frame"><div class="lbl"><span>Your username</span></div><div class="acct-email">@${esc(fr.username)}</div><p class="meta" style="margin:0">Share it so friends can add you. Change it under Account.</p></div>`;
+    h += `<div class="block frame"><label for="frName">Add a friend</label>
+      <div class="row">${nameInput('frName', frInput, '@username')}<button class="btn violet" data-act="frsend" type="button"${dis}>Send</button></div>
+      ${frNote ? say(frNote[0], frNote[1]) : ''}</div>`;
+    if (inc.length) h += `<h2 class="sec">Friend requests (${inc.length})</h2><ul class="list">${inc.map(f => `<li class="frow frame">
+        <span class="who"><b>@${esc(f.username)}</b><span class="meta">Wants to be friends · ${fmt(f.created_at)}</span></span>
+        <span class="acts"><button class="btn sm violet" data-act="fraccept" data-id="${esc(f.id)}" type="button"${dis}>Accept</button><button class="btn sm" data-act="frdecline" data-id="${esc(f.id)}" type="button"${dis}>Decline</button></span></li>`).join('')}</ul>`;
+    h += `<h2 class="sec">Friends (${friends.length})</h2>`;
+    h += friends.length ? `<ul class="list">${friends.map(f => rmAsk === f.id
+      ? `<li class="frow frame ask"><span class="who"><b>Remove @${esc(f.username)}?</b><span class="meta">You'll stop seeing each other's ratings.</span></span>
+         <span class="acts"><button class="btn sm" data-act="frrmno" type="button">Keep</button><button class="btn sm danger" data-act="frrmyes" data-id="${esc(f.id)}" type="button"${dis}>Remove</button></span></li>`
+      : `<li class="frow frame"><button class="who open" data-friend="${esc(f.friend_id)}" type="button"><b>@${esc(f.username)}</b><span class="meta">See their ratings ›</span></button>
+         <span class="acts"><button class="btn sm danger" data-act="frrm" data-id="${esc(f.id)}" type="button" aria-label="Remove @${esc(f.username)}">Remove</button></span></li>`).join('')}</ul>`
+      : `<div class="empty frame"><span class="big">${pixel(SPARK)}</span><h2>No friends yet</h2><p>Add someone by their username, or share yours: @${esc(fr.username)}</p></div>`;
+    if (sent.length) h += `<h2 class="sec">Sent requests (${sent.length})</h2><ul class="list">${sent.map(f => `<li class="frow frame">
+        <span class="who"><b>@${esc(f.username)}</b><span class="meta">Waiting for them to accept</span></span>
+        <span class="acts"><button class="btn sm" data-act="frcancel" data-id="${esc(f.id)}" type="button"${dis}>Cancel</button></span></li>`).join('')}</ul>`;
+  }
+  box.innerHTML = h;
+  if (keepId) { const el = document.getElementById(keepId); if (el) { el.focus({ preventScroll: true }); try { if (pos != null) el.setSelectionRange(pos, pos) } catch (_) { } } }
+}
+
 /* ---------- sheets ---------- */
 const corners = '<i></i><i></i><i></i><i></i>';
 function showSheet(html) { const s = $('#sheet'); s.innerHTML = skyHTML() + cloudsHTML() + html; s.hidden = false; s.scrollTop = 0; document.documentElement.style.overflow = 'hidden' }
@@ -163,20 +327,25 @@ function closeSheet() {
   if (!$('#shell').hidden) $('#add').focus?.();
 }
 function openDetail(id) {
-  const it = items.find(i => i.id === id); if (!it) return; openId = id;
+  const it = cur().find(i => i.id === id); if (!it) return; openId = id;
+  const v = viewing;
   showSheet(`<div class="sheet-in">
     <div class="sheet-bar frame"><button class="iconbtn" data-act="close" type="button" aria-label="Back">${ic('x')}</button><h2>${esc(it.cat)}</h2><span></span></div>
     ${it.photoUrl ? `<div class="pframe">${corners}<img class="d-photo" src="${esc(it.photoUrl)}" alt="Photo of ${esc(it.name)}"></div>` : ''}
     <div class="d-head frame"><h2>${esc(it.name)}</h2><div class="score ${tier(it.score)}">${it.score}<small>/10</small></div></div>
-    <div class="meta" style="margin:0 4px">${LABELS[it.score]} · rated ${fmt(it.created)}${it.updated - it.created > 60000 ? ' · edited ' + fmt(it.updated) : ''}</div>
+    <div class="meta" style="margin:0 4px">${LABELS[it.score]} · ${v ? `rated by @${esc(v.username)}` : 'rated'} ${fmt(it.created)}${it.updated - it.created > 60000 ? ' · edited ' + fmt(it.updated) : ''}</div>
     ${it.notes ? `<div class="notes frame">${esc(it.notes)}</div>` : '<div class="meta" style="margin:0 4px">No review written.</div>'}
-    <div class="actions" id="dActions"><button class="btn violet" data-act="edit" type="button">Edit</button><button class="btn danger" data-act="askdel" type="button">Delete</button></div>
+    ${v ? '' : '<div class="actions" id="dActions"><button class="btn violet" data-act="edit" type="button">Edit</button><button class="btn danger" data-act="askdel" type="button">Delete</button></div>'}
   </div>`);
 }
 function openAccount() {
   showSheet(`<div class="sheet-in">
     <div class="sheet-bar frame"><button class="iconbtn" data-act="close" type="button" aria-label="Close">${ic('x')}</button><h2>Account</h2><span></span></div>
     <div class="block frame"><div class="lbl">Signed in as</div><div class="acct-email">${esc(user?.email || '')}</div></div>
+    ${fr.state === 'ready' ? `<div class="block frame"><label for="unameEdit"><span>Username</span><span class="opt">3–20 · a–z, 0–9, _</span></label>
+      <p class="meta" style="margin:0">${fr.username ? 'Friends add you by this name.' : 'Pick one so friends can add you.'}</p>
+      <div class="row"><input type="text" id="unameEdit" maxlength="21" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="e.g. coco_fan" value="${esc(fr.username || '')}"><button class="btn" data-act="setuname" data-input="unameEdit" data-msg="unameMsg2" type="button">Save</button></div>
+      <div id="unameMsg2" class="msg err" role="alert" hidden></div></div>` : ''}
     <div class="block frame"><div class="lbl">Password</div><p class="meta" style="margin:0">We'll email you a link to choose a new one.</p><button class="btn" data-act="pwreset" type="button">Email me a reset link</button></div>
     <div class="block frame"><div class="lbl">Log out</div><p class="meta" style="margin:0">Your ratings stay saved to your account.</p><button class="btn danger" data-act="logout" type="button">Log out</button></div>
   </div>`);
@@ -341,11 +510,14 @@ function enterApp(u) {
   const c = readCache();
   if (c) { items = c.items; cats = c.cats?.length ? c.cats : [...DEFAULT_CATS]; loadState = 'ready' } else { items = []; cats = []; loadState = 'loading' }
   filter = 'All'; q = ''; $('#q').value = '';
-  showShell(); render(); loadData();
+  tab = 'mine'; viewing = null; fr = freshFr(); frNote = null; frInput = ''; unameInput = ''; rmAsk = null;
+  showShell(); render(); loadData(); loadSocial();
 }
 function leaveApp() {
   if (currentUid) clearCache(currentUid);
   user = null; currentUid = null; items = []; cats = []; filter = 'All'; q = ''; loadState = 'loading';
+  tab = 'mine'; viewing = null; fr = freshFr(); frNote = null; frInput = ''; unameInput = ''; rmAsk = null;
+  $('#friendsView').innerHTML = '';
   if (!$('#sheet').hidden) closeSheet();
   $('#list').innerHTML = ''; $('#q').value = '';
 }
@@ -365,7 +537,9 @@ document.addEventListener('click', async e => {
   }
   if (t.id === 'add') return openForm();
   if (t.id === 'acct') return openAccount();
-  if (t.id === 'retry') return loadData();
+  if (t.id === 'retry') return viewing ? loadFriend() : loadData();
+  if (t.dataset.tab) return switchTab(t.dataset.tab);
+  if (t.dataset.friend) return openFriend(t.dataset.friend);
   if (t.id === 'qclear') { clearSearch(); return $('#q').focus() }
   if (t.id === 'nomatchBtn') { if (needle()) clearSearch(); else { filter = 'All'; render() } return }
   if (t.dataset.filter) { filter = t.dataset.filter; return render() }
@@ -383,6 +557,16 @@ document.addEventListener('click', async e => {
     case 'askdel': $('#dActions').innerHTML = '<span class="meta" style="flex-basis:100%">Delete this rating for good?</span><button class="btn" data-act="candel" type="button">Keep it</button><button class="btn danger" data-act="del" type="button">Delete</button>'; return;
     case 'candel': $('#dActions').innerHTML = '<button class="btn violet" data-act="edit" type="button">Edit</button><button class="btn danger" data-act="askdel" type="button">Delete</button>'; return;
     case 'del': return remove();
+    case 'frback': return switchTab('friends');
+    case 'frretry': return loadSocial();
+    case 'setuname': return saveUsername(t.dataset.input, t.dataset.msg);
+    case 'frsend': return sendRequest();
+    case 'fraccept': return frAct('respond_friend_request', { p_id: t.dataset.id, p_accept: true }, 'Friend added');
+    case 'frdecline': return frAct('respond_friend_request', { p_id: t.dataset.id, p_accept: false }, 'Request declined');
+    case 'frcancel': return frAct('remove_friendship', { p_id: t.dataset.id }, 'Request cancelled');
+    case 'frrm': rmAsk = t.dataset.id; return render();
+    case 'frrmno': rmAsk = null; return render();
+    case 'frrmyes': return frAct('remove_friendship', { p_id: t.dataset.id }, 'Friend removed');
     case 'logout': return logout();
     case 'pwreset': {
       t.disabled = true;
@@ -396,9 +580,21 @@ document.addEventListener('submit', e => { if (e.target.id === 'authForm') submi
 $('#q').addEventListener('input', e => { q = e.target.value; render() });
 $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur() });
 $('#sort').addEventListener('change', e => { sort = e.target.value; try { localStorage.setItem('ra-sort', sort) } catch (_) { } render() });
-$('#list').addEventListener('error', e => { if (e.target.tagName === 'IMG') { const it = items.find(i => i.photoUrl === e.target.getAttribute('src')); if (it) it.photoUrl = null; e.target.outerHTML = pixel(STAR) } }, true);
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet() });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && currentUid && $('#sheet').hidden && Date.now() - lastLoad > 60000) loadData() });
+$('#list').addEventListener('error', e => { if (e.target.tagName === 'IMG') { const it = cur().find(i => i.photoUrl === e.target.getAttribute('src')); if (it) it.photoUrl = null; e.target.outerHTML = pixel(STAR) } }, true);
+document.addEventListener('input', e => { if (e.target.id === 'frName') frInput = e.target.value; else if (e.target.id === 'unameNew') unameInput = e.target.value });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#sheet').hidden) return closeSheet();
+  if (e.key !== 'Enter') return;
+  const id = e.target.id;
+  if (id === 'frName') { e.preventDefault(); sendRequest() }
+  else if (id === 'unameNew' || id === 'unameEdit') { e.preventDefault(); saveUsername(id, id === 'unameNew' ? 'unameMsg' : 'unameMsg2') }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !currentUid || !$('#sheet').hidden) return;
+  const now = Date.now();
+  if (viewing) { if (now - viewing.lastLoad > 60000) loadFriend() } else if (now - lastLoad > 60000) loadData();
+  if (now - fr.lastLoad > 60000) loadSocial();
+});
 
 /* ---------- boot ---------- */
 (function boot() {
